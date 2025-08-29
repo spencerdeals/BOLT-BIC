@@ -15,6 +15,7 @@ class AdaptiveScraper {
     }
   }
 
+  
   isAvailable() {
     return this.enabled;
   }
