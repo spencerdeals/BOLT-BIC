@@ -14,6 +14,7 @@ class UPCItemDB {
     }
   }
 
+  
   isAvailable() {
     return this.enabled;
   }
