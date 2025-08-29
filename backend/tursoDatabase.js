@@ -18,6 +18,7 @@ class TursoDatabase {
         return;
       }
 
+      
       this.client = createClient({
         url: databaseUrl,
         authToken: authToken,
