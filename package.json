@@ -1,42 +1,37 @@
 {
-  "name": "bermuda-calculator-test",
+  "name": "bermuda-import-calculator",
   "version": "1.0.0",
-  "description": "SDL Instant Import Calculator TEST - Enhanced with AI price detection",
+  "description": "SDL Enhanced Import Calculator with AI Learning",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
     "dev": "nodemon backend/server.js",
-    "railway-build": "npm install",
-    "railway-start": "node backend/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "bermuda",
-    "shipping",
-    "calculator",
-    "import",
-    "shopify",
-    "scraping",
-    "ai-learning",
-    "price-detection"
-  ],
-  "author": "SDL",
-  "license": "ISC",
   "dependencies": {
-    "express": "4.18.2",
-    "cors": "2.8.5",
-    "axios": "1.6.0",
-    "express-rate-limit": "7.1.5",
-    "dotenv": "16.3.1",
-    "apify-client": "2.9.3",
-    "cheerio": "1.0.0-rc.12",
-    "puppeteer": "21.5.2"
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "express-rate-limit": "^7.1.5",
+    "dotenv": "^16.3.1",
+    "apify-client": "^2.7.1",
+    "@libsql/client": "^0.4.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=16.0.0",
-    "npm": ">=8.0.0"
-  }
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "import",
+    "calculator",
+    "bermuda",
+    "shipping",
+    "scraping",
+    "ai"
+  ],
+  "author": "SDL",
+  "license": "MIT"
 }
