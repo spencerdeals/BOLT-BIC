@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.production
+.env.staging
+node_modules/
+*.log
+.DS_Store
+package-lock.json
+.vscode/
+.idea/
+*.tmp
+*.temp
+database.sqlite
+learning.json
