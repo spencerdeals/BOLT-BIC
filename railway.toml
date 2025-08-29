@@ -1,0 +1,24 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[[services]]
+name = "bermuda-calculator-test"
+
+[services.variables]
+NODE_ENV = "production"
+PORT = "8080"
+TEST_MODE = "true"
+
+[services.build]
+buildCommand = "npm run railway-build"
+startCommand = "npm run railway-start"
+
+[services.healthcheck]
+path = "/health"
+timeout = 30
