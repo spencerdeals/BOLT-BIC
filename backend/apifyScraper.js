@@ -15,6 +15,7 @@ class ApifyScraper {
     this.enabled = false;
     this.client = null;
 
+    
     if (!ApifyClient) {
       console.log('⚠️ Apify client library not available');
       return;
