@@ -1,24 +1,22 @@
-// backend/server.js - SDL Import Calculator TEST Server
+// backend/server.js - Enhanced SDL Import Calculator with AI Learning
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
-require('dotenv').config();
 
-// Import our scraping modules
+// Import our enhanced scraping system
 const ApifyScraper = require('./apifyScraper');
-const AdaptiveScraper = require('./adaptiveScraper');
+const UPCItemDB = require('./upcitemdb');
 const learningSystem = require('./learningSystem');
+
+// Initialize scrapers
+const apifyScraper = new ApifyScraper(process.env.APIFY_API_KEY);
+const upcItemDB = new UPCItemDB(process.env.UPCITEMDB_API_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-
-// Test mode configuration
-const TEST_MODE = process.env.TEST_MODE === 'true' || process.env.NODE_ENV !== 'production';
-
-console.log('🚀 Starting SDL Import Calculator Server...');
-console.log(`📊 Test Mode: ${TEST_MODE ? 'ENABLED' : 'DISABLED'}`);
-console.log(`🌐 Port: ${PORT}`);
+const HOST = process.env.HOST || '0.0.0.0';
 
 // Middleware
 app.use(cors());
@@ -28,270 +26,31 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: TEST_MODE ? 1000 : 100, // More requests in test mode
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api/', limiter);
 
-// Initialize scrapers
-const apifyScraper = new ApifyScraper(process.env.APIFY_API_KEY);
-const adaptiveScraper = new AdaptiveScraper(process.env.SCRAPINGBEE_API_KEY);
-
-// In-memory storage for test orders
-const testOrders = new Map();
-
-// Health check endpoint
+// Health check endpoint for Railway
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  const status = {
+    status: 'healthy',
     timestamp: new Date().toISOString(),
-    testMode: TEST_MODE,
-    version: '1.0.0-test'
-  });
-});
-
-// Main scraping endpoint
-app.post('/api/scrape', async (req, res) => {
-  const startTime = Date.now();
-  
-  try {
-    const { urls } = req.body;
-    
-    if (!urls || !Array.isArray(urls) || urls.length === 0) {
-      return res.status(400).json({ error: 'URLs array is required' });
-    }
-
-    if (urls.length > 50) {
-      return res.status(400).json({ error: 'Maximum 50 URLs allowed' });
-    }
-
-    console.log(`\n🔄 Processing ${urls.length} URLs in ${TEST_MODE ? 'TEST' : 'PRODUCTION'} mode...`);
-
-    const products = [];
-    const errors = [];
-
-    // Process each URL
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i];
-      console.log(`\n📦 Processing ${i + 1}/${urls.length}: ${url.substring(0, 80)}...`);
-
-      try {
-        let productData = null;
-
-        // Check learning system first
-        const knownProduct = await learningSystem.getKnownProduct(url);
-        if (knownProduct && !TEST_MODE) {
-          console.log('   🧠 Found in learning system');
-          productData = knownProduct;
-        } else {
-          // Try scraping methods in order of preference
-          const methods = [
-            { name: 'Apify', scraper: apifyScraper },
-            { name: 'Adaptive', scraper: adaptiveScraper }
-          ];
-
-          for (const method of methods) {
-            if (method.scraper.isAvailable && method.scraper.isAvailable()) {
-              try {
-                console.log(`   🔄 Trying ${method.name}...`);
-                productData = await method.scraper.scrapeProduct(url);
-                
-                if (productData && productData.name) {
-                  console.log(`   ✅ ${method.name} successful`);
-                  productData.scrapingMethod = method.name;
-                  break;
-                }
-              } catch (error) {
-                console.log(`   ❌ ${method.name} failed: ${error.message}`);
-                continue;
-              }
-            }
-          }
-        }
-
-        // If no scraping worked, create fallback product
-        if (!productData || !productData.name) {
-          console.log('   🔄 Creating fallback product...');
-          productData = createFallbackProduct(url);
-        }
-
-        // Enhance with shipping cost estimation
-        productData = await enhanceWithShippingCost(productData);
-        
-        // Add to products array
-        products.push(productData);
-
-        // Save to learning system (skip in test mode)
-        if (!TEST_MODE && productData.scrapingMethod) {
-          await learningSystem.saveProduct(productData);
-          await learningSystem.recordScrapingResult(url, productData.retailer, productData, productData.scrapingMethod);
-        }
-
-      } catch (error) {
-        console.error(`   ❌ Error processing ${url}:`, error.message);
-        errors.push({ url, error: error.message });
-        
-        // Add fallback product even on error
-        products.push(createFallbackProduct(url));
-      }
-    }
-
-    const processingTime = Date.now() - startTime;
-    console.log(`\n✅ Completed in ${processingTime}ms`);
-    console.log(`📊 Success: ${products.length}, Errors: ${errors.length}`);
-
-    // Get AI insights (skip in test mode)
-    if (!TEST_MODE) {
-      await learningSystem.getInsights();
-    }
-
-    res.json({
-      success: true,
-      products,
-      errors,
-      processingTime,
-      testMode: TEST_MODE,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ Scraping endpoint error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error', 
-      testMode: TEST_MODE,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Store pending test order
-app.post('/api/store-pending-order', async (req, res) => {
-  try {
-    const orderData = req.body;
-    const orderId = `test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    // Store in memory for test mode
-    testOrders.set(orderId, {
-      ...orderData,
-      createdAt: new Date().toISOString(),
-      status: 'pending'
-    });
-
-    console.log(`📝 Stored test order: ${orderId}`);
-    
-    res.json({ 
-      success: true, 
-      orderId,
-      testMode: TEST_MODE
-    });
-  } catch (error) {
-    console.error('❌ Store order error:', error);
-    res.status(500).json({ error: 'Failed to store order' });
-  }
-});
-
-// Get pending test order
-app.get('/api/get-pending-order/:orderId', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const orderData = testOrders.get(orderId);
-    
-    if (!orderData) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    res.json({
-      success: true,
-      order: orderData,
-      testMode: TEST_MODE
-    });
-  } catch (error) {
-    console.error('❌ Get order error:', error);
-    res.status(500).json({ error: 'Failed to retrieve order' });
-  }
-});
-
-// Test endpoint for Shopify integration simulation
-app.post('/apps/instant-import/create-draft-order', async (req, res) => {
-  try {
-    const orderData = req.body;
-    
-    if (TEST_MODE) {
-      // Simulate draft order creation
-      const draftOrderNumber = `TEST-${Date.now()}`;
-      
-      console.log(`🧪 TEST: Simulating draft order creation`);
-      console.log(`📋 Order Number: ${draftOrderNumber}`);
-      console.log(`💰 Total: $${orderData.totals?.grandTotal?.toFixed(2) || '0.00'}`);
-      console.log(`📦 Products: ${orderData.products?.length || 0}`);
-      
-      // Simulate processing delay
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      res.json({
-        success: true,
-        draftOrderNumber,
-        testMode: true,
-        message: 'Test draft order created successfully'
-      });
-    } else {
-      // In production, this would integrate with Shopify
-      res.status(501).json({ 
-        error: 'Shopify integration not implemented in this version',
-        testMode: false
-      });
-    }
-  } catch (error) {
-    console.error('❌ Draft order error:', error);
-    res.status(500).json({ error: 'Failed to create draft order' });
-  }
-});
-
-// Test insights endpoint
-app.get('/api/test-insights', async (req, res) => {
-  try {
-    const insights = {
-      testMode: TEST_MODE,
-      testOrders: testOrders.size,
-      uptime: process.uptime(),
-      memory: process.memoryUsage(),
-      timestamp: new Date().toISOString()
-    };
-
-    if (!TEST_MODE) {
-      const aiInsights = await learningSystem.getInsights();
-      insights.ai = aiInsights;
-    }
-
-    res.json(insights);
-  } catch (error) {
-    console.error('❌ Insights error:', error);
-    res.status(500).json({ error: 'Failed to get insights' });
-  }
-});
-
-// Helper Functions
-function createFallbackProduct(url) {
-  const retailer = detectRetailer(url);
-  const category = guessCategory(url);
-  
-  return {
-    url,
-    name: `Product from ${retailer}`,
-    retailer,
-    category,
-    price: null,
-    image: 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=SDL',
-    dimensions: null,
-    weight: null,
-    inStock: true,
-    scrapingMethod: 'fallback',
-    shippingCost: estimateShippingCost(category, null, null)
+    services: {
+      apify: apifyScraper.isAvailable(),
+      upcItemDB: upcItemDB.enabled,
+      learningSystem: true
+    },
+    uptime: process.uptime()
   };
-}
+  
+  res.status(200).json(status);
+});
 
+// In-memory storage for pending orders (replace with database in production)
+const pendingOrders = new Map();
+
+// Detect retailer from URL
 function detectRetailer(url) {
   try {
     const domain = new URL(url).hostname.toLowerCase();
@@ -305,131 +64,492 @@ function detectRetailer(url) {
     if (domain.includes('costco.com')) return 'Costco';
     if (domain.includes('macys.com')) return 'Macys';
     if (domain.includes('ikea.com')) return 'IKEA';
+    if (domain.includes('overstock.com')) return 'Overstock';
+    if (domain.includes('cb2.com')) return 'CB2';
+    if (domain.includes('crateandbarrel.com')) return 'Crate & Barrel';
+    if (domain.includes('westelm.com')) return 'West Elm';
+    if (domain.includes('potterybarn.com')) return 'Pottery Barn';
     return 'Unknown Retailer';
   } catch (e) {
     return 'Unknown Retailer';
   }
 }
 
-function guessCategory(url) {
-  const urlLower = url.toLowerCase();
-  if (urlLower.includes('furniture') || urlLower.includes('chair') || urlLower.includes('table')) return 'Furniture';
-  if (urlLower.includes('electronic') || urlLower.includes('tv') || urlLower.includes('computer')) return 'Electronics';
-  if (urlLower.includes('clothing') || urlLower.includes('shirt') || urlLower.includes('dress')) return 'Clothing';
-  if (urlLower.includes('home') || urlLower.includes('kitchen') || urlLower.includes('decor')) return 'Home & Garden';
-  if (urlLower.includes('toy') || urlLower.includes('game')) return 'Toys & Games';
-  if (urlLower.includes('book')) return 'Books';
-  if (urlLower.includes('sport') || urlLower.includes('fitness')) return 'Sports & Outdoors';
-  return 'General';
-}
-
-async function enhanceWithShippingCost(product) {
-  // Get AI estimation if available
-  if (!TEST_MODE) {
-    try {
-      const aiEstimation = await learningSystem.getSmartEstimation(
-        product.category, 
-        product.name, 
-        product.retailer
-      );
-      
-      if (aiEstimation) {
-        console.log(`   🤖 AI estimation: ${aiEstimation.source}`);
-        if (!product.dimensions && aiEstimation.dimensions) {
-          product.dimensions = aiEstimation.dimensions;
-        }
-        if (!product.weight && aiEstimation.weight) {
-          product.weight = aiEstimation.weight;
-        }
-      }
-    } catch (error) {
-      console.log('   ⚠️ AI estimation failed:', error.message);
-    }
+// Categorize product based on name and URL
+function categorizeProduct(name, url) {
+  const text = (name + ' ' + url).toLowerCase();
+  
+  // Furniture categories
+  if (text.match(/\b(sofa|couch|chair|table|desk|bed|mattress|dresser|cabinet|bookshelf|nightstand)\b/)) {
+    return 'Furniture';
   }
-
-  // Calculate shipping cost
-  product.shippingCost = estimateShippingCost(
-    product.category,
-    product.dimensions,
-    product.weight
-  );
-
-  return product;
+  
+  // Electronics
+  if (text.match(/\b(tv|television|laptop|computer|phone|tablet|headphones|speaker|camera|gaming)\b/)) {
+    return 'Electronics';
+  }
+  
+  // Home & Garden
+  if (text.match(/\b(lamp|lighting|rug|curtain|pillow|blanket|decor|plant|garden|outdoor)\b/)) {
+    return 'Home & Garden';
+  }
+  
+  // Appliances
+  if (text.match(/\b(refrigerator|washer|dryer|dishwasher|microwave|oven|blender|vacuum)\b/)) {
+    return 'Appliances';
+  }
+  
+  // Clothing & Accessories
+  if (text.match(/\b(shirt|pants|dress|shoes|jacket|bag|watch|jewelry|clothing|apparel)\b/)) {
+    return 'Clothing & Accessories';
+  }
+  
+  // Sports & Outdoors
+  if (text.match(/\b(bike|bicycle|fitness|exercise|sports|camping|hiking|fishing)\b/)) {
+    return 'Sports & Outdoors';
+  }
+  
+  // Books & Media
+  if (text.match(/\b(book|dvd|cd|vinyl|magazine|media)\b/)) {
+    return 'Books & Media';
+  }
+  
+  // Toys & Games
+  if (text.match(/\b(toy|game|puzzle|doll|action figure|board game|video game)\b/)) {
+    return 'Toys & Games';
+  }
+  
+  // Health & Beauty
+  if (text.match(/\b(skincare|makeup|shampoo|perfume|vitamin|supplement|health|beauty)\b/)) {
+    return 'Health & Beauty';
+  }
+  
+  // Tools & Hardware
+  if (text.match(/\b(tool|drill|hammer|screwdriver|hardware|automotive|repair)\b/)) {
+    return 'Tools & Hardware';
+  }
+  
+  return 'General Merchandise';
 }
 
-function estimateShippingCost(category, dimensions, weight) {
-  // Base rates by category
-  const categoryRates = {
-    'Furniture': 45,
-    'Electronics': 25,
-    'Home & Garden': 20,
-    'Clothing': 15,
-    'Books': 12,
-    'Toys & Games': 18,
-    'Sports & Outdoors': 30,
-    'General': 20
+// Calculate shipping cost based on category, weight, and dimensions
+function calculateShippingCost(category, weight, dimensions, price) {
+  let baseCost = 15; // Base ocean freight cost
+  
+  // Category-based adjustments
+  const categoryMultipliers = {
+    'Furniture': 2.5,
+    'Appliances': 2.0,
+    'Electronics': 1.2,
+    'Sports & Outdoors': 1.8,
+    'Tools & Hardware': 1.5,
+    'Home & Garden': 1.3,
+    'General Merchandise': 1.0,
+    'Clothing & Accessories': 0.8,
+    'Books & Media': 0.7,
+    'Toys & Games': 1.1,
+    'Health & Beauty': 0.9
   };
-
-  let baseCost = categoryRates[category] || 20;
-
-  // Adjust for dimensions
-  if (dimensions) {
-    const volume = (dimensions.length || 12) * (dimensions.width || 12) * (dimensions.height || 12);
-    const cubicFeet = volume / 1728; // Convert cubic inches to cubic feet
-    
-    if (cubicFeet > 5) baseCost += Math.floor(cubicFeet - 5) * 8;
-    if (cubicFeet > 15) baseCost += Math.floor(cubicFeet - 15) * 5;
+  
+  baseCost *= (categoryMultipliers[category] || 1.0);
+  
+  // Weight-based cost (if available)
+  if (weight && weight > 0) {
+    if (weight > 50) baseCost += 25; // Heavy items
+    else if (weight > 20) baseCost += 15; // Medium items
+    else if (weight > 5) baseCost += 5; // Light items
   }
-
-  // Adjust for weight
-  if (weight) {
-    if (weight > 10) baseCost += Math.floor(weight - 10) * 2;
-    if (weight > 50) baseCost += Math.floor(weight - 50) * 1;
+  
+  // Size-based cost (if dimensions available)
+  if (dimensions && dimensions.length && dimensions.width && dimensions.height) {
+    const volume = dimensions.length * dimensions.width * dimensions.height;
+    if (volume > 10000) baseCost += 30; // Very large items
+    else if (volume > 5000) baseCost += 20; // Large items
+    else if (volume > 1000) baseCost += 10; // Medium items
   }
-
-  // Add some randomness for realism in test mode
-  if (TEST_MODE) {
-    baseCost += Math.floor(Math.random() * 10) - 5;
+  
+  // Price-based adjustment (higher value items cost more to ship safely)
+  if (price && price > 0) {
+    if (price > 1000) baseCost += 20;
+    else if (price > 500) baseCost += 10;
+    else if (price > 100) baseCost += 5;
   }
-
-  return Math.max(10, Math.round(baseCost));
+  
+  return Math.round(baseCost);
 }
 
-// Cleanup test orders periodically (every hour)
-if (TEST_MODE) {
-  setInterval(() => {
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    let cleaned = 0;
+// Enhanced scraping with multiple fallbacks and AI learning
+async function scrapeProductWithAI(url) {
+  const retailer = detectRetailer(url);
+  console.log(`\n🔍 Scraping ${retailer} product: ${url.substring(0, 60)}...`);
+  
+  try {
+    // Check if we've seen this product before (AI learning)
+    const knownProduct = await learningSystem.getKnownProduct(url);
+    if (knownProduct) {
+      console.log(`   🧠 AI: Found cached product data (confidence: ${(knownProduct.confidence * 100).toFixed(1)}%)`);
+      return {
+        url,
+        name: knownProduct.name,
+        price: knownProduct.price,
+        image: knownProduct.image,
+        retailer: knownProduct.retailer,
+        category: knownProduct.category,
+        dimensions: knownProduct.dimensions,
+        weight: knownProduct.weight,
+        shippingCost: calculateShippingCost(knownProduct.category, knownProduct.weight, knownProduct.dimensions, knownProduct.price),
+        scrapingMethod: 'ai_cache'
+      };
+    }
+
+    let productData = null;
+    let scrapingMethod = 'unknown';
+
+    // Try Apify first (most advanced)
+    if (apifyScraper.isAvailable()) {
+      try {
+        console.log(`   🤖 Trying Apify for ${retailer}...`);
+        productData = await apifyScraper.scrapeProduct(url);
+        scrapingMethod = 'apify';
+        console.log(`   ✅ Apify success for ${retailer}`);
+      } catch (error) {
+        console.log(`   ❌ Apify failed for ${retailer}: ${error.message}`);
+      }
+    }
+
+    // Fallback to ScrapingBee if Apify failed
+    if (!productData) {
+      try {
+        console.log(`   🐝 Trying ScrapingBee fallback...`);
+        productData = await scrapeWithScrapingBee(url);
+        scrapingMethod = 'scrapingbee';
+        console.log(`   ✅ ScrapingBee success`);
+      } catch (error) {
+        console.log(`   ❌ ScrapingBee failed: ${error.message}`);
+      }
+    }
+
+    // If we still don't have good data, try UPC lookup
+    if (!productData || !productData.name || productData.name === 'Unknown Product') {
+      if (upcItemDB.enabled && productData?.name) {
+        try {
+          console.log(`   🔍 Trying UPC lookup...`);
+          const upcData = await upcItemDB.searchByName(productData.name);
+          if (upcData) {
+            productData = { ...productData, ...upcData };
+            scrapingMethod += '_upc';
+            console.log(`   ✅ UPC lookup enhanced data`);
+          }
+        } catch (error) {
+          console.log(`   ❌ UPC lookup failed: ${error.message}`);
+        }
+      }
+    }
+
+    // If we still don't have data, create basic fallback
+    if (!productData) {
+      console.log(`   ⚠️ All scraping failed, creating fallback product`);
+      productData = {
+        name: `Product from ${retailer}`,
+        price: null,
+        image: 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=SDL',
+        dimensions: null,
+        weight: null,
+        brand: null,
+        inStock: true
+      };
+      scrapingMethod = 'fallback';
+    }
+
+    // Enhance with our categorization and shipping calculation
+    const category = categorizeProduct(productData.name, url);
+    const shippingCost = calculateShippingCost(category, productData.weight, productData.dimensions, productData.price);
+
+    // Try to get AI estimation if we're missing key data
+    if (!productData.dimensions || !productData.weight) {
+      const aiEstimation = await learningSystem.getSmartEstimation(category, productData.name, retailer);
+      if (aiEstimation) {
+        console.log(`   🤖 AI: Using smart estimation (confidence: ${(aiEstimation.confidence * 100).toFixed(1)}%)`);
+        if (!productData.dimensions && aiEstimation.dimensions) {
+          productData.dimensions = aiEstimation.dimensions;
+        }
+        if (!productData.weight && aiEstimation.weight) {
+          productData.weight = aiEstimation.weight;
+        }
+      }
+    }
+
+    const finalProduct = {
+      url,
+      name: productData.name,
+      price: productData.price,
+      image: productData.image,
+      retailer,
+      category,
+      dimensions: productData.dimensions,
+      weight: productData.weight,
+      shippingCost,
+      scrapingMethod
+    };
+
+    // Save to AI learning system
+    await learningSystem.saveProduct(finalProduct);
+    await learningSystem.recordScrapingResult(url, retailer, productData, scrapingMethod);
+
+    console.log(`   📦 Final product: ${finalProduct.name?.substring(0, 50)}... | $${finalProduct.shippingCost} shipping`);
+    return finalProduct;
+
+  } catch (error) {
+    console.error(`   💥 Complete scraping failure for ${url}:`, error.message);
     
-    for (const [orderId, order] of testOrders.entries()) {
-      if (new Date(order.createdAt) < oneHourAgo) {
-        testOrders.delete(orderId);
-        cleaned++;
+    // Return absolute fallback
+    return {
+      url,
+      name: `Product from ${retailer}`,
+      price: null,
+      image: 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=SDL',
+      retailer,
+      category: 'General Merchandise',
+      dimensions: null,
+      weight: null,
+      shippingCost: 25,
+      scrapingMethod: 'error_fallback'
+    };
+  }
+}
+
+// ScrapingBee fallback function
+async function scrapeWithScrapingBee(url) {
+  const axios = require('axios');
+  
+  if (!process.env.SCRAPINGBEE_API_KEY) {
+    throw new Error('ScrapingBee API key not configured');
+  }
+
+  const response = await axios.get('https://app.scrapingbee.com/api/v1/', {
+    params: {
+      api_key: process.env.SCRAPINGBEE_API_KEY,
+      url: url,
+      render_js: 'true',
+      premium_proxy: 'true',
+      country_code: 'us'
+    },
+    timeout: 30000
+  });
+
+  const cheerio = require('cheerio');
+  const $ = cheerio.load(response.data);
+
+  // Generic selectors that work across many sites
+  const titleSelectors = [
+    'h1',
+    '[data-testid="product-title"]',
+    '.product-title',
+    '#productTitle',
+    '[itemprop="name"]',
+    '.product-name'
+  ];
+
+  const imageSelectors = [
+    'img.mainImage',
+    '[data-testid="product-image"] img',
+    '.product-photo img',
+    '#landingImage',
+    '[itemprop="image"]',
+    '.primary-image img'
+  ];
+
+  let name = null;
+  let image = null;
+
+  // Try to find product name
+  for (const selector of titleSelectors) {
+    const element = $(selector).first();
+    if (element.length && element.text().trim()) {
+      name = element.text().trim();
+      break;
+    }
+  }
+
+  // Try to find product image
+  for (const selector of imageSelectors) {
+    const element = $(selector).first();
+    if (element.length) {
+      image = element.attr('src') || element.attr('data-src');
+      if (image) break;
+    }
+  }
+
+  return {
+    name: name || 'Unknown Product',
+    price: null, // ScrapingBee doesn't extract price reliably
+    image: image || 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=SDL',
+    dimensions: null,
+    weight: null,
+    brand: null,
+    inStock: true
+  };
+}
+
+// API Routes
+app.post('/api/scrape', async (req, res) => {
+  try {
+    const { urls } = req.body;
+    
+    if (!urls || !Array.isArray(urls)) {
+      return res.status(400).json({ error: 'URLs array is required' });
+    }
+
+    console.log(`\n🚀 Starting enhanced scrape for ${urls.length} products...`);
+    
+    const products = [];
+    
+    // Process URLs with some concurrency but not too much to avoid rate limits
+    const batchSize = 3;
+    for (let i = 0; i < urls.length; i += batchSize) {
+      const batch = urls.slice(i, i + batchSize);
+      const batchPromises = batch.map(url => scrapeProductWithAI(url));
+      const batchResults = await Promise.allSettled(batchPromises);
+      
+      batchResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          products.push(result.value);
+        } else {
+          console.error(`Failed to scrape ${batch[index]}:`, result.reason);
+          // Add fallback product
+          products.push({
+            url: batch[index],
+            name: 'Product (Scraping Failed)',
+            price: null,
+            image: 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=SDL',
+            retailer: detectRetailer(batch[index]),
+            category: 'General Merchandise',
+            dimensions: null,
+            weight: null,
+            shippingCost: 25,
+            scrapingMethod: 'failed'
+          });
+        }
+      });
+      
+      // Small delay between batches
+      if (i + batchSize < urls.length) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    console.log(`\n✅ Scraping complete! ${products.length} products processed`);
+    
+    // Get AI insights
+    const insights = await learningSystem.getInsights();
+    
+    res.json({ 
+      products,
+      insights,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Scraping error:', error);
+    res.status(500).json({ error: 'Failed to scrape products' });
+  }
+});
+
+// Store pending order
+app.post('/api/store-pending-order', (req, res) => {
+  try {
+    const orderData = req.body;
+    const orderId = Date.now().toString();
+    
+    pendingOrders.set(orderId, {
+      ...orderData,
+      createdAt: new Date().toISOString()
+    });
+    
+    // Clean up old orders (older than 1 hour)
+    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    for (const [id, order] of pendingOrders.entries()) {
+      if (new Date(order.createdAt).getTime() < oneHourAgo) {
+        pendingOrders.delete(id);
       }
     }
     
-    if (cleaned > 0) {
-      console.log(`🧹 Cleaned up ${cleaned} old test orders`);
+    res.json({ orderId });
+  } catch (error) {
+    console.error('Error storing pending order:', error);
+    res.status(500).json({ error: 'Failed to store order' });
+  }
+});
+
+// Get pending order
+app.get('/api/get-pending-order/:orderId', (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const order = pendingOrders.get(orderId);
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
     }
-  }, 60 * 60 * 1000); // Run every hour
-}
+    
+    res.json(order);
+  } catch (error) {
+    console.error('Error getting pending order:', error);
+    res.status(500).json({ error: 'Failed to get order' });
+  }
+});
+
+// AI Learning insights endpoint
+app.get('/api/insights', async (req, res) => {
+  try {
+    const insights = await learningSystem.getInsights();
+    const report = await learningSystem.getScrapingReport();
+    
+    res.json({
+      insights,
+      report,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting insights:', error);
+    res.status(500).json({ error: 'Failed to get insights' });
+  }
+});
+
+// Serve frontend
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/index.html'));
+});
+
+app.get('/complete-order.html', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/complete-order.html'));
+});
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 SDL Import Calculator Server running!`);
-  console.log(`📍 Local: http://localhost:${PORT}`);
-  console.log(`🌐 Network: http://0.0.0.0:${PORT}`);
-  console.log(`🧪 Test Mode: ${TEST_MODE ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`⚡ Ready to process import calculations!\n`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('🛑 Received SIGTERM, shutting down gracefully...');
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('\n🛑 Received SIGINT, shutting down gracefully...');
-  process.exit(0);
+app.listen(PORT, HOST, async () => {
+  console.log('\n🚀 SDL ENHANCED IMPORT CALCULATOR STARTING...\n');
+  
+  // Initialize and show status
+  console.log('📊 SCRAPING SERVICES STATUS:');
+  console.log(`   ${apifyScraper.isAvailable() ? '✅' : '❌'} Apify: ${apifyScraper.isAvailable() ? 'Active' : 'Disabled'}`);
+  console.log(`   ${upcItemDB.enabled ? '✅' : '❌'} UPCitemdb: ${upcItemDB.enabled ? 'Active' : 'Disabled'}`);
+  console.log(`   ✅ ScrapingBee: Active (fallback)`);
+  console.log(`   ✅ AI Learning: Active`);
+  
+  // Get AI insights on startup
+  try {
+    const insights = await learningSystem.getInsights();
+    if (insights.totalProducts > 0) {
+      console.log(`\n🧠 AI LEARNING STATUS:`);
+      console.log(`   Products learned: ${insights.totalProducts}`);
+      console.log(`   Average confidence: ${(insights.avgConfidence * 100).toFixed(1)}%`);
+      console.log(`   Categories tracked: ${insights.categories?.length || 0}`);
+    }
+  } catch (error) {
+    console.log('   ⚠️ AI insights unavailable');
+  }
+  
+  console.log(`\n🌐 Server running on http://${HOST}:${PORT}`);
+  console.log(`🏥 Health check: http://${HOST}:${PORT}/health`);
+  console.log(`🧪 Test Mode: ${process.env.NODE_ENV !== 'production' ? 'ENABLED' : 'DISABLED'}`);
+  console.log('\n🎯 Ready for product scraping!\n');
 });
