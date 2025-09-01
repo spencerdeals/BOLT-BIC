@@ -1,7 +1,7 @@
 {
-  "name": "sdl-import-calculator",
+  "name": "bermuda-import-calculator",
   "version": "1.0.0",
-  "description": "SDL Enhanced Import Calculator with AI Learning",
+  "description": "SDL Instant Import Calculator for Bermuda shipping estimates",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
@@ -11,30 +11,28 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
-    "import",
+    "bermuda",
+    "shipping",
     "calculator",
-    "scraping",
-    "ai",
-    "learning",
-    "ecommerce"
+    "import",
+    "shopify",
+    "scraping"
   ],
-  "author": "SDL Import Team",
-  "license": "MIT",
+  "author": "SDL",
+  "license": "ISC",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "express-rate-limit": "^6.7.0",
-    "axios": "^1.4.0",
-    "cheerio": "^1.0.0-rc.12",
-    "dotenv": "^16.1.4",
-    "@libsql/client": "^0.6.0",
-    "node-cron": "^3.0.2",
-    "apify-client": "^2.7.1"
+    "axios": "^1.6.0",
+    "express-rate-limit": "^7.1.5",
+    "dotenv": "^16.3.1",
+    "apify-client": "^2.9.3"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22"
+    "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
   }
 }
