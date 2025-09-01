@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
+const axios = require('axios');
 require('dotenv').config();
 
 // Import our modules
@@ -29,6 +30,9 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 const apifyScraper = new ApifyScraper(process.env.APIFY_API_KEY);
 const upcItemDB = new UPCItemDB(process.env.UPCITEMDB_API_KEY);
 
+// ScrapingBee API Key (using your friend's working key as fallback)
+const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY || '7Z45R9U0PVA9SCI5P4R6RACA0PZUVSWDGNXCZ0OV0EXA17FAVC0PANLM6FAFDDO1PE7MRSZX4JT3SDIG';
+
 // Test mode flag
 const TEST_MODE = process.env.TEST_MODE === 'true';
 
@@ -39,9 +43,9 @@ console.log('\n🚀 SDL ENHANCED IMPORT CALCULATOR STARTING...\n');
 
 // Service status check
 console.log('📋 SERVICE STATUS:');
+console.log(`   ✅ ScrapingBee AI: Active (Primary)`);
 console.log(`   ${apifyScraper.isAvailable() ? '✅' : '❌'} Apify: ${apifyScraper.isAvailable() ? 'Active' : 'Disabled'}`);
 console.log(`   ${upcItemDB.enabled ? '✅' : '❌'} UPCitemdb: ${upcItemDB.enabled ? 'Active' : 'Disabled'}`);
-console.log(`   ✅ ScrapingBee: Active (Fallback)`);
 console.log(`   ✅ AI Learning: Active`);
 
 // Get AI insights on startup
@@ -53,9 +57,9 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     services: {
+      scrapingbee: !!SCRAPINGBEE_API_KEY,
       apify: apifyScraper.isAvailable(),
       upcitemdb: upcItemDB.enabled,
-      scrapingbee: !!process.env.SCRAPINGBEE_API_KEY,
       learning: true
     }
   });
@@ -190,6 +194,77 @@ function calculateShippingCost(category, weight, price, dimensions) {
   return Math.round(baseCost * 100) / 100; // Round to 2 decimal places
 }
 
+// Calculate our margin and final landed price
+function calculateLandedPrice(productPrice, shippingCost) {
+  const subtotal = productPrice + shippingCost;
+  const margin = subtotal * 0.25; // 25% margin
+  const landedPrice = subtotal + margin;
+  
+  return {
+    productPrice,
+    shippingCost,
+    subtotal,
+    margin,
+    landedPrice: Math.round(landedPrice * 100) / 100
+  };
+}
+
+// Enhanced ScrapingBee AI extraction (based on your friend's successful approach)
+async function scrapeWithScrapingBeeAI(url) {
+  try {
+    console.log(`   🔄 Trying ScrapingBee AI extraction...`);
+    
+    const response = await axios.get('https://app.scrapingbee.com/api/v1', {
+      params: {
+        api_key: SCRAPINGBEE_API_KEY,
+        url: url,
+        premium_proxy: 'true',
+        country_code: 'us',
+        ai_extract_rules: JSON.stringify({
+          "product_name": "Product name or title",
+          "price": "Product price in USD",
+          "image_url": "Main product image URL",
+          "availability": "In stock status",
+          "brand": "Product brand",
+          "description": "Product description"
+        })
+      },
+      timeout: 30000
+    });
+    
+    if (response.status === 200 && response.data) {
+      const extractedData = response.data;
+      console.log(`   ✅ ScrapingBee AI successful`);
+      console.log(`   📊 Extracted:`, extractedData);
+      
+      // Parse the price from the extracted data
+      let price = null;
+      if (extractedData.price) {
+        const priceMatch = extractedData.price.toString().match(/[\d,]+\.?\d*/);
+        if (priceMatch) {
+          price = parseFloat(priceMatch[0].replace(',', ''));
+        }
+      }
+      
+      return {
+        name: extractedData.product_name || 'Product Name Not Found',
+        price: price,
+        image: extractedData.image_url,
+        brand: extractedData.brand,
+        inStock: extractedData.availability ? !extractedData.availability.toLowerCase().includes('out') : true,
+        description: extractedData.description,
+        scrapingMethod: 'scrapingbee_ai',
+        confidence: price ? 0.9 : 0.6 // High confidence if we got a price
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.log(`   ❌ ScrapingBee AI failed: ${error.message}`);
+    return null;
+  }
+}
+
 // Enhanced scraping with multiple fallbacks and AI learning
 async function scrapeProductData(url) {
   const retailer = detectRetailer(url);
@@ -198,8 +273,10 @@ async function scrapeProductData(url) {
   
   // Check if we've seen this product before (AI Learning)
   const knownProduct = await learningSystem.getKnownProduct(url);
-  if (knownProduct) {
+  if (knownProduct && knownProduct.confidence > 0.8) {
     console.log(`   🤖 AI: Found cached product data (confidence: ${(knownProduct.confidence * 100).toFixed(1)}%)`);
+    const landedPricing = calculateLandedPrice(knownProduct.price, calculateShippingCost(knownProduct.category, knownProduct.weight, knownProduct.price, knownProduct.dimensions));
+    
     return {
       url,
       name: knownProduct.name,
@@ -209,17 +286,25 @@ async function scrapeProductData(url) {
       category: knownProduct.category,
       weight: knownProduct.weight,
       dimensions: knownProduct.dimensions,
-      shippingCost: calculateShippingCost(knownProduct.category, knownProduct.weight, knownProduct.price, knownProduct.dimensions),
+      shippingCost: landedPricing.shippingCost,
+      landedPricing,
       inStock: knownProduct.inStock,
-      scrapingMethod: 'ai_cache'
+      scrapingMethod: 'ai_cache',
+      needsPriceConfirmation: false // Cached data is already confirmed
     };
   }
   
   let productData = null;
   let scrapingMethod = 'unknown';
   
-  // Try Apify first (if available)
-  if (apifyScraper.isAvailable()) {
+  // Try ScrapingBee AI first (your friend's successful approach)
+  productData = await scrapeWithScrapingBeeAI(url);
+  if (productData) {
+    scrapingMethod = 'scrapingbee_ai';
+  }
+  
+  // Fallback to Apify if ScrapingBee AI failed
+  if (!productData && apifyScraper.isAvailable()) {
     try {
       console.log(`   🔄 Trying Apify scraper...`);
       productData = await apifyScraper.scrapeProduct(url);
@@ -230,119 +315,10 @@ async function scrapeProductData(url) {
     }
   }
   
-  // Fallback to ScrapingBee if Apify failed
-  if (!productData && process.env.SCRAPINGBEE_API_KEY) {
-    try {
-      console.log(`   🔄 Trying ScrapingBee fallback...`);
-      const axios = require('axios');
-      
-      const response = await axios.get('https://app.scrapingbee.com/api/v1/', {
-        params: {
-          api_key: process.env.SCRAPINGBEE_API_KEY,
-          url: url,
-          render_js: 'true',
-          premium_proxy: 'true',
-          country_code: 'us'
-        },
-        timeout: 30000
-      });
-      
-      if (response.data) {
-        const cheerio = require('cheerio');
-        const $ = cheerio.load(response.data);
-        
-        // Generic selectors for common e-commerce sites
-        const titleSelectors = [
-          'h1', 
-          '[data-testid="product-title"]',
-          '.product-title',
-          '#productTitle',
-          '[itemprop="name"]',
-          '.product-name',
-          '.product-info h1',
-          '.pdp-title'
-        ];
-        
-        const priceSelectors = [
-          '[data-testid="product-price"]',
-          '.price-now',
-          '.price',
-          '[itemprop="price"]',
-          '.product-price',
-          '.current-price',
-          'span.wux-price-display',
-          '.pdp-price'
-        ];
-        
-        const imageSelectors = [
-          'img.mainImage',
-          '[data-testid="product-image"] img',
-          '.product-photo img',
-          '#landingImage',
-          '[itemprop="image"]',
-          '.primary-image img'
-        ];
-        
-        let name = null;
-        let price = null;
-        let image = null;
-        
-        // Extract name
-        for (const selector of titleSelectors) {
-          const element = $(selector).first();
-          if (element.length && element.text().trim()) {
-            name = element.text().trim();
-            break;
-          }
-        }
-        
-        // Extract price
-        for (const selector of priceSelectors) {
-          const element = $(selector).first();
-          if (element.length && element.text().trim()) {
-            const priceText = element.text().trim();
-            const priceMatch = priceText.match(/[\d,]+\.?\d*/);
-            if (priceMatch) {
-              price = parseFloat(priceMatch[0].replace(',', ''));
-              break;
-            }
-          }
-        }
-        
-        // Extract image
-        for (const selector of imageSelectors) {
-          const element = $(selector).first();
-          if (element.length) {
-            image = element.attr('src') || element.attr('data-src');
-            if (image) break;
-          }
-        }
-        
-        if (name) {
-          productData = {
-            name: name,
-            price: price,
-            image: image,
-            dimensions: null,
-            weight: null,
-            brand: null,
-            category: null,
-            inStock: true
-          };
-          scrapingMethod = 'scrapingbee';
-          console.log(`   ✅ ScrapingBee successful`);
-        }
-      }
-    } catch (error) {
-      console.log(`   ❌ ScrapingBee failed: ${error.message}`);
-    }
-  }
-  
   // If still no data, try UPCitemdb as last resort
   if (!productData && upcItemDB.enabled) {
     try {
       console.log(`   🔄 Trying UPCitemdb search...`);
-      // Extract potential product name from URL for search
       const urlParts = url.split('/');
       const searchTerm = urlParts.find(part => part.length > 10 && part.includes('-'))?.replace(/-/g, ' ') || 'product';
       
@@ -356,7 +332,8 @@ async function scrapeProductData(url) {
           weight: upcData.weight,
           brand: upcData.brand,
           category: null,
-          inStock: true
+          inStock: true,
+          scrapingMethod: 'upcitemdb'
         };
         scrapingMethod = 'upcitemdb';
         console.log(`   ✅ UPCitemdb successful`);
@@ -377,7 +354,8 @@ async function scrapeProductData(url) {
       weight: null,
       brand: null,
       category: null,
-      inStock: true
+      inStock: true,
+      scrapingMethod: 'fallback'
     };
     scrapingMethod = 'fallback';
   }
@@ -394,6 +372,9 @@ async function scrapeProductData(url) {
     productData.weight = aiEstimation.weight;
   }
   
+  const shippingCost = calculateShippingCost(category, productData.weight, estimatedPrice, productData.dimensions);
+  const landedPricing = calculateLandedPrice(estimatedPrice, shippingCost);
+  
   const result = {
     url,
     name: productData.name,
@@ -403,9 +384,11 @@ async function scrapeProductData(url) {
     category,
     weight: productData.weight,
     dimensions: productData.dimensions,
-    shippingCost: calculateShippingCost(category, productData.weight, estimatedPrice, productData.dimensions),
+    shippingCost,
+    landedPricing,
     inStock: productData.inStock,
-    scrapingMethod
+    scrapingMethod,
+    needsPriceConfirmation: !productData.price || scrapingMethod === 'fallback' // Need confirmation if no price or fallback
   };
   
   // Save to learning system for future use
@@ -424,7 +407,7 @@ async function scrapeProductData(url) {
   // Record scraping performance
   await learningSystem.recordScrapingResult(url, retailer, result, scrapingMethod);
   
-  console.log(`   📦 Final result: ${result.name.substring(0, 50)}... | $${result.shippingCost} shipping`);
+  console.log(`   📦 Final result: ${result.name.substring(0, 50)}... | $${result.landedPricing.landedPrice} landed`);
   
   return result;
 }
@@ -447,19 +430,27 @@ app.post('/api/scrape', async (req, res) => {
     // In test mode, return mock data
     if (TEST_MODE) {
       console.log('🧪 TEST MODE: Returning mock data');
-      const mockProducts = urls.map((url, index) => ({
-        url,
-        name: `Test Product ${index + 1}`,
-        price: 99.99,
-        image: 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=Test',
-        retailer: detectRetailer(url),
-        category: 'General Merchandise',
-        weight: 2.5,
-        dimensions: { length: 12, width: 8, height: 4 },
-        shippingCost: 25.50,
-        inStock: true,
-        scrapingMethod: 'test_mode'
-      }));
+      const mockProducts = urls.map((url, index) => {
+        const mockPrice = 99.99;
+        const mockShipping = 25.50;
+        const landedPricing = calculateLandedPrice(mockPrice, mockShipping);
+        
+        return {
+          url,
+          name: `Test Product ${index + 1}`,
+          price: mockPrice,
+          image: 'https://placehold.co/300x300/7CB342/FFFFFF/png?text=Test',
+          retailer: detectRetailer(url),
+          category: 'General Merchandise',
+          weight: 2.5,
+          dimensions: { length: 12, width: 8, height: 4 },
+          shippingCost: mockShipping,
+          landedPricing,
+          inStock: true,
+          scrapingMethod: 'test_mode',
+          needsPriceConfirmation: false
+        };
+      });
       
       return res.json({ products: mockProducts });
     }
@@ -479,6 +470,10 @@ app.post('/api/scrape', async (req, res) => {
         } else {
           console.error(`Failed to scrape ${batch[index]}:`, result.reason);
           // Add fallback data for failed scrapes
+          const fallbackPrice = 50;
+          const fallbackShipping = 20;
+          const landedPricing = calculateLandedPrice(fallbackPrice, fallbackShipping);
+          
           results.push({
             url: batch[index],
             name: `Product from ${detectRetailer(batch[index])}`,
@@ -488,9 +483,11 @@ app.post('/api/scrape', async (req, res) => {
             category: 'General Merchandise',
             weight: null,
             dimensions: null,
-            shippingCost: 20,
+            shippingCost: fallbackShipping,
+            landedPricing,
             inStock: true,
-            scrapingMethod: 'error_fallback'
+            scrapingMethod: 'error_fallback',
+            needsPriceConfirmation: true
           });
         }
       });
@@ -508,6 +505,45 @@ app.post('/api/scrape', async (req, res) => {
   } catch (error) {
     console.error('Scraping error:', error);
     res.status(500).json({ error: 'Failed to scrape products' });
+  }
+});
+
+// Update product price endpoint (for price confirmation)
+app.post('/api/update-price', async (req, res) => {
+  try {
+    const { url, newPrice, confirmed } = req.body;
+    
+    if (!url || newPrice === undefined) {
+      return res.status(400).json({ error: 'URL and new price are required' });
+    }
+    
+    // Recalculate shipping and landed pricing with new price
+    const retailer = detectRetailer(url);
+    const category = 'General Merchandise'; // You might want to store this
+    const shippingCost = calculateShippingCost(category, null, newPrice, null);
+    const landedPricing = calculateLandedPrice(newPrice, shippingCost);
+    
+    // If confirmed, save to learning system
+    if (confirmed) {
+      await learningSystem.saveProduct({
+        url,
+        price: newPrice,
+        retailer,
+        category,
+        confirmed: true,
+        updatedAt: new Date()
+      });
+    }
+    
+    res.json({
+      success: true,
+      shippingCost,
+      landedPricing
+    });
+    
+  } catch (error) {
+    console.error('Error updating price:', error);
+    res.status(500).json({ error: 'Failed to update price' });
   }
 });
 
@@ -582,8 +618,10 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000); // Clean up every 15 minutes
 
-app.listen(PORT, () => {
+// Fixed port binding for Railway
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Server running on port ${PORT}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
   console.log(`🧪 Test Mode: ${TEST_MODE ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
