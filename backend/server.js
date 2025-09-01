@@ -1,4 +1,4 @@
-// server.js - SDL Enhanced Import Calculator with AI Learning
+// backend/server.js - SDL Enhanced Import Calculator with AI Learning
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -33,6 +33,16 @@ const TEST_MODE = process.env.TEST_MODE === 'true';
 const pendingOrders = new Map();
 
 console.log('\n🚀 SDL ENHANCED IMPORT CALCULATOR STARTING...\n');
+
+// Service status check
+console.log('📋 SERVICE STATUS:');
+console.log(`   ✅ ScrapingBee AI: Active (Primary)`);
+console.log(`   ${apifyScraper.isAvailable() ? '✅' : '❌'} Apify: ${apifyScraper.isAvailable() ? 'Active' : 'Disabled'}`);
+console.log(`   ${upcItemDB.enabled ? '✅' : '❌'} UPCitemdb: ${upcItemDB.enabled ? 'Active' : 'Disabled'}`);
+console.log(`   ✅ AI Learning: Active`);
+
+// Get AI insights on startup
+learningSystem.getInsights();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -71,6 +81,10 @@ function detectRetailer(url) {
     if (domain.includes('bestbuy.com')) return 'Best Buy';
     if (domain.includes('walmart.com')) return 'Walmart';
     if (domain.includes('homedepot.com')) return 'Home Depot';
+    if (domain.includes('lowes.com')) return 'Lowes';
+    if (domain.includes('costco.com')) return 'Costco';
+    if (domain.includes('macys.com')) return 'Macys';
+    if (domain.includes('ikea.com')) return 'IKEA';
     return 'Unknown Retailer';
   } catch (e) {
     return 'Unknown Retailer';
@@ -189,6 +203,28 @@ async function scrapeProductData(url) {
   const retailer = detectRetailer(url);
   console.log(`\n🔍 Scraping: ${retailer}`);
   
+  const knownProduct = await learningSystem.getKnownProduct(url);
+  if (knownProduct && knownProduct.confidence > 0.8) {
+    console.log(`   🤖 AI: Found cached product data`);
+    const landedPricing = calculateLandedPrice(knownProduct.price, calculateShippingCost(knownProduct.category, knownProduct.weight, knownProduct.price, knownProduct.dimensions));
+    
+    return {
+      url,
+      name: knownProduct.name,
+      price: knownProduct.price,
+      image: knownProduct.image,
+      retailer,
+      category: knownProduct.category,
+      weight: knownProduct.weight,
+      dimensions: knownProduct.dimensions,
+      shippingCost: landedPricing.shippingCost,
+      landedPricing,
+      inStock: knownProduct.inStock,
+      scrapingMethod: 'ai_cache',
+      needsPriceConfirmation: false
+    };
+  }
+  
   let productData = null;
   let scrapingMethod = 'unknown';
   
@@ -246,7 +282,7 @@ async function scrapeProductData(url) {
   };
   
   // Save to learning system
-  learningSystem.saveProduct({
+  await learningSystem.saveProduct({
     url,
     name: result.name,
     retailer,
@@ -258,7 +294,7 @@ async function scrapeProductData(url) {
     scrapingMethod
   });
   
-  learningSystem.recordScrapingResult(url, retailer, result, scrapingMethod);
+  await learningSystem.recordScrapingResult(url, retailer, result, scrapingMethod);
   
   return result;
 }
@@ -456,7 +492,7 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000);
 
-// Start server
+// Start server - FIXED: Removed host binding
 app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
